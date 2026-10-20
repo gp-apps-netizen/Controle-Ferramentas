@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#1d4ed8">
 <title>Controle de Ferramentas</title>
 <style>
-:root{--bg:#f3f5f9;--card:#fff;--txt:#1b2333;--mut:#667085;--pri:#1d4ed8;--bad:#dc2626;--warn:#d97706;--line:#e2e8f0}
-@media (prefers-color-scheme: dark){:root{--bg:#0f1420;--card:#171e2e;--txt:#e6ebf5;--mut:#9aa6bd;--pri:#5b8cff;--bad:#f87171;--warn:#fbbf24;--line:#2a3550}}
+:root{--bg:#f3f5f9;--card:#fff;--txt:#1b2333;--mut:#667085;--pri:#1d4ed8;--bad:#dc2626;--ok:#16a34a;--warn:#d97706;--line:#e2e8f0}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1420;--card:#171e2e;--txt:#e6ebf5;--mut:#9aa6bd;--pri:#5b8cff;--bad:#f87171;--ok:#4ade80;--warn:#fbbf24;--line:#2a3550}}
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt);padding-bottom:72px}
 header{background:var(--pri);color:#fff;padding:14px 16px;font-weight:700;font-size:18px;position:sticky;top:0;z-index:5}
@@ -16,20 +16,25 @@ nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);b
 nav button{flex:1;padding:14px 4px;border:0;background:none;color:var(--mut);font-size:14px}
 nav button.on{color:var(--pri);font-weight:700}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
-label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+label{display:block;font-size:13px;color:var(--mut);margin:12px 0 4px}
 label.item{display:flex;align-items:center;gap:10px;margin:0;padding:10px 0;border-bottom:1px solid var(--line);color:var(--txt);font-size:16px}
 label.item:last-of-type{border-bottom:0}
 label.item input{width:22px;height:22px;flex:none}
+label.item span{flex:1}
+small.score{font-size:12px;color:var(--mut);white-space:nowrap}
 input[type=text],textarea,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--txt);font-size:16px}
 textarea{min-height:110px;font-family:inherit}
 button.btn{background:var(--pri);color:#fff;border:0;border-radius:8px;padding:11px 16px;font-size:15px;margin-top:10px;cursor:pointer}
 button.sec{background:var(--card);color:var(--pri);border:1px solid var(--pri)}
 button.perigo{background:var(--bad)}
 .row{display:flex;gap:8px;flex-wrap:wrap}
+.item-row{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+.item-row input{flex:1;min-width:0}
+.item-row .btn{margin:0;padding:9px 10px;font-size:13px;white-space:nowrap}
 .muted{color:var(--mut);font-size:13px}
 .tag{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700}
 .tag.ok{background:#dcfce7;color:#166534}.tag.bad{background:#fee2e2;color:#991b1b}
-img.prev,canvas{max-width:100%;border-radius:8px;margin-top:8px;display:block}
+img.prev,canvas{max-width:100%;border-radius:8px;margin-top:8px;display:block;touch-action:none}
 input[type=range]{width:100%}
 .hidden{display:none}
 </style>
@@ -49,7 +54,8 @@ input[type=range]{width:100%}
 
 <script>
 const KEY='controle-ferramentas-v1';
-const GW=64,GH=48,COLS=4,ROWS=3;
+const AW=240, AH=180;          // resolução de análise (ambas as fotos são reduzidas para cá)
+const BUSCA=16;                // deslocamento máximo procurado, em pixels de análise
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
@@ -76,29 +82,48 @@ function redimensionar(src,maxW,q){
   });
 }
 
-/* ---------- comparação por grade ---------- */
-function gray(img){
-  const c=document.createElement('canvas');c.width=GW;c.height=GH;
+/* ---------- reconhecimento por imagem ---------- */
+// Converte a foto em tons de cinza na resolução de análise.
+function grayDe(img){
+  const c=document.createElement('canvas');c.width=AW;c.height=AH;
   const x=c.getContext('2d',{willReadFrequently:true});
-  x.drawImage(img,0,0,GW,GH);
-  const d=x.getImageData(0,0,GW,GH).data, out=new Float32Array(GW*GH);
-  for(let i=0;i<GW*GH;i++) out[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
-  return out;
+  x.drawImage(img,0,0,AW,AH);
+  const d=x.getImageData(0,0,AW,AH).data, o=new Float32Array(AW*AH);
+  for(let i=0;i<AW*AH;i++) o[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+  return o;
 }
-function zscore(a){
+// Remove média e escala para norma 1: assim o produto escalar vira correlação (NCC),
+// imune a diferenças de brilho e contraste entre as fotos.
+function normalizar(a){
   let m=0;for(const v of a)m+=v;m/=a.length;
-  let s=0;for(const v of a)s+=(v-m)*(v-m);s=Math.sqrt(s/a.length)||1;
-  return a.map(v=>(v-m)/s); // normaliza brilho/contraste
+  let s=0;for(const v of a)s+=(v-m)*(v-m);s=Math.sqrt(s)||1;
+  for(let i=0;i<a.length;i++) a[i]=(a[i]-m)/s;
 }
-function comparar(A,B){
-  const a=zscore(gray(A)), b=zscore(gray(B));
-  const cw=GW/COLS, ch=GH/ROWS, out=[];
-  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
-    let s=0,n=0;
-    for(let y=r*ch;y<(r+1)*ch;y++)for(let x=c*cw;x<(c+1)*cw;x++){const i=y*GW+x;s+=Math.abs(a[i]-b[i]);n++}
-    out.push(s/n);
+// Procura a área de um item (reg, normalizada 0..1) da foto do kit dentro da foto atual.
+// Retorna a melhor correlação (1 = idêntico, ~0 = nada parecido).
+function melhorCasamento(kitG,curG,reg){
+  const rx=Math.round(reg.x*AW), ry=Math.round(reg.y*AH);
+  const rw=Math.max(4,Math.round(reg.w*AW)), rh=Math.max(4,Math.round(reg.h*AH));
+  const T=new Float32Array(rw*rh);
+  let k=0;for(let y=0;y<rh;y++)for(let x=0;x<rw;x++) T[k++]=kitG[(ry+y)*AW+(rx+x)];
+  normalizar(T);
+  const P=new Float32Array(rw*rh);
+  let best=-1;
+  for(let dy=-BUSCA;dy<=BUSCA;dy++) for(let dx=-BUSCA;dx<=BUSCA;dx++){
+    const px=rx+dx, py=ry+dy;
+    if(px<0||py<0||px+rw>AW||py+rh>AH) continue;
+    let q=0;for(let y=0;y<rh;y++)for(let x=0;x<rw;x++) P[q++]=curG[(py+y)*AW+(px+x)];
+    normalizar(P);
+    let s=0;for(let i=0;i<T.length;i++) s+=T[i]*P[i];
+    if(s>best) best=s;
   }
-  return out;
+  return best;
+}
+function rect(x,r,cor,nome){
+  const W=x.canvas.width,H=x.canvas.height;
+  x.lineWidth=Math.max(3,W/180);x.strokeStyle=cor;x.fillStyle=cor+'33';
+  x.fillRect(r.x*W,r.y*H,r.w*W,r.h*H);x.strokeRect(r.x*W,r.y*H,r.w*W,r.h*H);
+  if(nome){x.fillStyle=cor;x.font=`bold ${Math.round(W/40)}px sans-serif`;x.fillText(nome,r.x*W+4,r.y*H+Math.round(W/35));}
 }
 
 /* ---------- navegação ---------- */
@@ -111,58 +136,134 @@ function show(v){
 }
 
 /* ---------- aba Gavetas (cadastro do kit) ---------- */
-let editId=null, novaFoto=null;
+let draft=null, ativo=null, kitSrc=null, kitImg=null;
+
+function abrirForm(g){
+  draft=g?JSON.parse(JSON.stringify(g)):{id:null,nome:'',itens:[{id:uid(),nome:'',regiao:null}],foto:null};
+  ativo=null;kitSrc=null;
+  renderGavetas();
+}
 function renderGavetas(){
   const el=$('#v-gavetas');
-  const g=editId?db.gavetas.find(x=>x.id===editId):null;
-  const lista=db.gavetas.map(x=>`
-    <div class="card">
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <div><b>${esc(x.nome)}</b>
-          <div class="muted">${x.itens.length} itens · ${x.foto?'com foto do kit':'<span style="color:var(--warn)">sem foto do kit</span>'}</div>
+  if(!draft){
+    const lista=db.gavetas.map(x=>`
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div><b>${esc(x.nome)}</b>
+            <div class="muted">${x.itens.length} itens · ${x.itens.filter(i=>i.regiao).length} com área marcada · ${x.foto?'com foto do kit':'<span style="color:var(--warn)">sem foto do kit</span>'}</div>
+          </div>
+          <div class="row">
+            <button class="btn sec" data-ed="${x.id}">Editar</button>
+            <button class="btn perigo" data-del="${x.id}">Excluir</button>
+          </div>
         </div>
-        <div class="row">
-          <button class="btn sec" onclick="editar('${x.id}')">Editar</button>
-          <button class="btn perigo" onclick="excluirG('${x.id}')">Excluir</button>
-        </div>
-      </div>
-    </div>`).join('')||'<p class="muted">Nenhuma gaveta cadastrada ainda.</p>';
-
+      </div>`).join('')||'<p class="muted">Nenhuma gaveta cadastrada ainda.</p>';
+    el.innerHTML=`<button class="btn" id="g-novo" style="margin:0 0 12px;width:100%">+ Nova gaveta</button>${lista}`;
+    $('#g-novo').onclick=()=>abrirForm(null);
+    el.querySelectorAll('[data-ed]').forEach(b=>b.onclick=()=>abrirForm(db.gavetas.find(x=>x.id===b.dataset.ed)));
+    el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>excluirG(b.dataset.del));
+    return;
+  }
   el.innerHTML=`
     <div class="card">
-      <b>${g?'Editar gaveta':'Nova gaveta'}</b>
+      <b>${draft.id?'Editar gaveta':'Nova gaveta'}</b>
       <label>Nome da gaveta</label>
-      <input type="text" id="g-nome" value="${esc(g?.nome||'')}" placeholder="Ex.: Gaveta 3 - Alicates">
-      <label>Itens do kit (um por linha)</label>
-      <textarea id="g-itens" placeholder="Alicate ajustável&#10;Alicate bico&#10;Tesoura">${esc(g?g.itens.map(i=>i.nome).join('\n'):'')}</textarea>
-      <label>Foto do kit completo (gaveta arrumada, enquadramento fixo)</label>
+      <input type="text" id="g-nome" value="${esc(draft.nome)}" placeholder="Ex.: Gaveta 3 - Alicates">
+      <label>1. Foto do kit completo (gaveta arrumada, enquadramento fixo)</label>
       <input type="file" accept="image/*" id="g-foto">
-      <div id="g-prev">${g?.foto?`<img class="prev" src="${g.foto}">`:''}</div>
+      <div id="g-area"></div>
+      <label>2. Itens do kit. Toque em "Marcar área" e arraste um retângulo sobre o item na foto.</label>
+      <div id="g-itens"></div>
+      <button class="btn sec" id="g-add">+ Adicionar item</button>
       <div class="row">
-        <button class="btn" onclick="salvarG()">Salvar gaveta</button>
-        ${g?'<button class="btn sec" onclick="cancelarEdicao()">Cancelar</button>':''}
+        <button class="btn" id="g-salvar">Salvar gaveta</button>
+        <button class="btn sec" id="g-cancel">Cancelar</button>
       </div>
-    </div>
-    ${lista}`;
-
+    </div>`;
+  $('#g-nome').oninput=e=>draft.nome=e.target.value;
   $('#g-foto').onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
-    novaFoto=await redimensionar(await lerArquivo(f),1000,0.8);
-    $('#g-prev').innerHTML=`<img class="prev" src="${novaFoto}">`;
+    draft.foto=await redimensionar(await lerArquivo(f),1000,0.8);
+    kitSrc=null;ativo=null;renderGavetas();
+  };
+  $('#g-add').onclick=()=>{draft.itens.push({id:uid(),nome:'',regiao:null});renderGavetas()};
+  $('#g-salvar').onclick=salvarG;
+  $('#g-cancel').onclick=()=>{draft=null;ativo=null;renderGavetas()};
+  renderItens();
+  renderKit();
+}
+function renderItens(){
+  const box=$('#g-itens');
+  box.innerHTML=draft.itens.map((it,i)=>`
+    <div class="item-row">
+      <input type="text" data-n="${i}" value="${esc(it.nome)}" placeholder="Nome do item">
+      <button class="btn ${ativo===it.id?'':'sec'}" data-m="${i}">${ativo===it.id?'Arraste na foto':(it.regiao?'Refazer área':'Marcar área')}</button>
+      <button class="btn perigo" data-r="${i}">×</button>
+    </div>`).join('')||'<p class="muted">Nenhum item.</p>';
+  box.querySelectorAll('[data-n]').forEach(inp=>inp.oninput=()=>draft.itens[+inp.dataset.n].nome=inp.value);
+  box.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{
+    if(!draft.foto) return alert('Envie primeiro a foto do kit completo.');
+    ativo=draft.itens[+b.dataset.m].id;renderGavetas();
+  });
+  box.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>{
+    const idx=+b.dataset.r;
+    if(ativo===draft.itens[idx].id) ativo=null;
+    draft.itens.splice(idx,1);renderGavetas();
+  });
+}
+async function renderKit(){
+  const area=$('#g-area');
+  if(!draft.foto){area.innerHTML='<p class="muted">Envie a foto do kit para marcar a área de cada item.</p>';return}
+  const nomeAtivo=draft.itens.find(i=>i.id===ativo)?.nome||'item';
+  area.innerHTML=`<canvas id="g-cv"></canvas>
+    <p class="muted">${ativo?`Arraste sobre o item: <b>${esc(nomeAtivo)}</b>`:'Toque em "Marcar área" de um item para desenhá-la aqui.'}</p>`;
+  const cv=$('#g-cv');
+  if(kitSrc!==draft.foto){kitImg=await loadImg(draft.foto);kitSrc=draft.foto;}
+  cv.width=kitImg.naturalWidth;cv.height=kitImg.naturalHeight;
+
+  const pintar=extra=>{
+    const x=cv.getContext('2d');
+    x.clearRect(0,0,cv.width,cv.height);x.drawImage(kitImg,0,0);
+    draft.itens.forEach(it=>{if(it.regiao) rect(x,it.regiao,'#16a34a',it.nome)});
+    if(extra) rect(x,extra,'#f59e0b','');
+  };
+  pintar();
+
+  let p0=null, atual=null;
+  const pos=e=>{
+    const r=cv.getBoundingClientRect();
+    return {x:Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)),y:Math.min(1,Math.max(0,(e.clientY-r.top)/r.height))};
+  };
+  cv.onpointerdown=e=>{
+    if(!ativo) return;
+    p0=pos(e);atual=null;
+    cv.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  cv.onpointermove=e=>{
+    if(!p0) return;
+    const q=pos(e);
+    atual={x:Math.min(p0.x,q.x),y:Math.min(p0.y,q.y),w:Math.abs(q.x-p0.x),h:Math.abs(q.y-p0.y)};
+    pintar(atual);
+  };
+  cv.onpointerup=()=>{
+    if(!p0) return;
+    const it=draft.itens.find(i=>i.id===ativo), r=atual;
+    p0=null;
+    if(it&&r&&r.w>0.03&&r.h>0.03){it.regiao=r;ativo=null;}
+    renderGavetas();
   };
 }
-function editar(id){editId=id;novaFoto=null;renderGavetas();window.scrollTo(0,0)}
-function cancelarEdicao(){editId=null;novaFoto=null;renderGavetas()}
 function salvarG(){
-  const nome=$('#g-nome').value.trim();
-  const nomes=$('#g-itens').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  if(!nome||!nomes.length) return alert('Informe o nome da gaveta e pelo menos um item.');
-  const g=editId?db.gavetas.find(x=>x.id===editId):null;
-  const itens=nomes.map(n=>{const antigo=g?.itens.find(i=>i.nome===n);return {id:antigo?.id||uid(),nome:n}});
-  const obj={id:g?.id||uid(),nome,itens,foto:novaFoto??g?.foto??null};
-  if(g) Object.assign(g,obj); else db.gavetas.push(obj);
+  const nome=draft.nome.trim();
+  const itens=draft.itens.filter(i=>i.nome.trim()).map(i=>({id:i.id,nome:i.nome.trim(),regiao:i.regiao}));
+  if(!nome||!itens.length) return alert('Informe o nome da gaveta e pelo menos um item.');
+  if(draft.foto && itens.some(i=>!i.regiao) && !confirm('Alguns itens não têm área marcada. Eles só poderão ser conferidos pela lista. Salvar mesmo assim?')) return;
+  const obj={id:draft.id||uid(),nome,itens,foto:draft.foto};
+  const idx=db.gavetas.findIndex(x=>x.id===obj.id);
+  if(idx>=0) db.gavetas[idx]=obj; else db.gavetas.push(obj);
   if(!persist()) return;
-  editId=null;novaFoto=null;renderGavetas();
+  draft=null;ativo=null;renderGavetas();
 }
 function excluirG(id){
   if(!confirm('Excluir esta gaveta? O histórico dela será mantido.')) return;
@@ -171,12 +272,16 @@ function excluirG(id){
 }
 
 /* ---------- aba Conferir ---------- */
-let conf={gaveta:null,foto:null,imgAtual:null,celulas:null,marc:{},limiar:0.7,obs:''};
+let limiarPadrao=0.5;
+let conf=null;
+function novaConf(gaveta){
+  return {gaveta,foto:null,imgAtual:null,kitG:null,curG:null,scores:{},marc:{},manual:{},limiar:limiarPadrao,obs:''};
+}
 
 function renderConf(){
   const el=$('#v-conf');
   if(!db.gavetas.length){el.innerHTML='<div class="card muted">Cadastre uma gaveta primeiro, na aba Gavetas.</div>';return}
-  if(!conf.gaveta||!db.gavetas.find(g=>g.id===conf.gaveta)) conf.gaveta=db.gavetas[0].id;
+  if(!conf||!db.gavetas.find(g=>g.id===conf.gaveta)) conf=novaConf(db.gavetas[0].id);
   const g=db.gavetas.find(x=>x.id===conf.gaveta);
 
   el.innerHTML=`
@@ -188,71 +293,99 @@ function renderConf(){
       <div id="c-res"></div>
     </div>
     <div class="card">
-      <b>2. Confira os itens (o que está na gaveta)</b>
-      <div style="margin-top:6px">
-        ${g.itens.map(i=>`<label class="item"><input type="checkbox" data-id="${i.id}" ${conf.marc[i.id]?'checked':''}><span>${esc(i.nome)}</span></label>`).join('')}
-      </div>
+      <b>2. Itens da gaveta</b>
+      <div id="c-lista" style="margin-top:6px"></div>
       <label>Observações</label>
-      <textarea id="c-obs" style="min-height:60px">${esc(conf.obs)}</textarea>
-      <button class="btn" onclick="salvarConf()">Salvar conferência</button>
+      <textarea id="c-obs" style="min-height:60px"></textarea>
+      <button class="btn" id="c-salvar">Salvar conferência</button>
     </div>`;
 
-  $('#c-sel').onchange=e=>{conf={gaveta:e.target.value,foto:null,imgAtual:null,celulas:null,marc:{},limiar:conf.limiar,obs:''};renderConf()};
+  $('#c-obs').value=conf.obs;
   $('#c-obs').oninput=e=>conf.obs=e.target.value;
-  el.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.onchange=()=>conf.marc[cb.dataset.id]=cb.checked);
+  $('#c-sel').onchange=e=>{conf=novaConf(e.target.value);renderConf()};
   $('#c-foto').onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
     conf.foto=await redimensionar(await lerArquivo(f),1000,0.85);
     conf.imgAtual=await loadImg(conf.foto);
-    conf.celulas=null;
-    paintRes();
+    conf.manual={};conf.marc={};
     await analisar();
-    paintRes();
+    renderConf();
   };
+  $('#c-salvar').onclick=salvarConf;
+  renderLista();
   paintRes();
 }
 
 async function analisar(){
   const g=db.gavetas.find(x=>x.id===conf.gaveta);
-  if(!g.foto||!conf.foto) return;
-  const A=await loadImg(g.foto);
-  conf.celulas=comparar(A,conf.imgAtual);
+  conf.scores={};
+  if(!g.foto||!conf.imgAtual||!g.itens.some(i=>i.regiao)) return;
+  if(!conf.kitG) conf.kitG=grayDe(await loadImg(g.foto));
+  conf.curG=grayDe(conf.imgAtual);
+  g.itens.forEach(i=>{if(i.regiao) conf.scores[i.id]=melhorCasamento(conf.kitG,conf.curG,i.regiao)});
+  aplicarPresenca();
+}
+
+// Decide presença de cada item pela similaridade, exceto itens que o operador marcou à mão.
+function aplicarPresenca(){
+  const g=db.gavetas.find(x=>x.id===conf.gaveta);
+  g.itens.forEach(i=>{
+    if(conf.scores[i.id]!=null && !conf.manual[i.id]) conf.marc[i.id]=conf.scores[i.id]>=conf.limiar;
+  });
+}
+
+function renderLista(){
+  const g=db.gavetas.find(x=>x.id===conf.gaveta);
+  const box=$('#c-lista');
+  box.innerHTML=g.itens.map(i=>{
+    const s=conf.scores[i.id];
+    const info=s!=null?'similaridade '+Math.round(Math.max(0,s)*100)+'%':(i.regiao?'':'só pela lista');
+    return `<label class="item"><input type="checkbox" data-id="${i.id}" ${conf.marc[i.id]?'checked':''}><span>${esc(i.nome)}</span><small class="score">${info}</small></label>`;
+  }).join('');
+  box.querySelectorAll('input').forEach(cb=>cb.onchange=()=>{
+    conf.marc[cb.dataset.id]=cb.checked;
+    conf.manual[cb.dataset.id]=true;
+    desenhar();
+  });
 }
 
 function paintRes(){
-  const box=$('#c-res'); if(!box) return;
+  const box=$('#c-res');
   const g=db.gavetas.find(x=>x.id===conf.gaveta);
   if(!conf.foto){box.innerHTML='';return}
-  if(!g.foto){
-    box.innerHTML=`<p class="muted">Esta gaveta não tem foto do kit. Confira só pela lista abaixo.</p><img class="prev" src="${conf.foto}">`;
+  if(!conf.imgAtual||!g.itens.some(i=>i.regiao)){
+    box.innerHTML=`<p class="muted">Esta gaveta não tem áreas de referência. Confira pela lista.</p><img class="prev" src="${conf.foto}">`;
     return;
   }
-  if(!conf.celulas){box.innerHTML='<p class="muted">Analisando…</p>';return}
   box.innerHTML=`
     <canvas id="c-cv"></canvas>
     <p class="muted" id="c-txt"></p>
-    <label>Sensibilidade (menor = mais alertas): <b id="c-lv"></b></label>
-    <input type="range" id="c-lim" min="0.3" max="1.5" step="0.05" value="${conf.limiar}">`;
-  $('#c-lim').oninput=e=>{conf.limiar=+e.target.value;desenhar()};
+    <label>Limite de presença: <b id="c-lv"></b> (maior = mais exigente)</label>
+    <input type="range" id="c-lim" min="0.2" max="0.9" step="0.02" value="${conf.limiar}">`;
+  $('#c-lim').oninput=e=>{
+    conf.limiar=limiarPadrao=+e.target.value;
+    aplicarPresenca();
+    document.querySelectorAll('#c-lista input').forEach(cb=>cb.checked=!!conf.marc[cb.dataset.id]);
+    desenhar();
+  };
   desenhar();
 }
 
 function desenhar(){
   const cv=$('#c-cv'), img=conf.imgAtual;
-  if(!cv||!img||!conf.celulas) return;
+  const g=db.gavetas.find(x=>x.id===conf.gaveta);
+  if(!cv||!img) return;
   cv.width=img.naturalWidth;cv.height=img.naturalHeight;
   const x=cv.getContext('2d');
   x.drawImage(img,0,0);
-  const cw=cv.width/COLS, ch=cv.height/ROWS;
-  let n=0;
-  conf.celulas.forEach((v,i)=>{
-    if(v<=conf.limiar) return;
-    n++;
-    const r=Math.floor(i/COLS), c=i%COLS;
-    x.fillStyle='rgba(220,38,38,0.35)';x.fillRect(c*cw,r*ch,cw,ch);
-    x.strokeStyle='#dc2626';x.lineWidth=Math.max(3,cv.width/200);x.strokeRect(c*cw,r*ch,cw,ch);
+  g.itens.forEach(i=>{
+    if(!i.regiao||conf.scores[i.id]==null) return;
+    rect(x,i.regiao,conf.marc[i.id]?'#16a34a':'#dc2626',i.nome);
   });
-  $('#c-txt').innerHTML=`Áreas diferentes do kit: <b>${n}</b> de ${COLS*ROWS}. Use como pista para achar o que falta. A decisão final é sua, pela lista.`;
+  const faltam=g.itens.filter(i=>!conf.marc[i.id]).map(i=>i.nome);
+  $('#c-txt').innerHTML=faltam.length
+    ? `Faltando: <b>${faltam.map(esc).join(', ')}</b>`
+    : 'Todos os itens marcados como presentes.';
   $('#c-lv').textContent=conf.limiar.toFixed(2);
 }
 
@@ -266,7 +399,7 @@ async function salvarConf(){
   db.conferencias.unshift({id:uid(),data:new Date().toISOString(),gaveta:g.nome,total:g.itens.length,faltando,obs:conf.obs||'',foto});
   db.conferencias=db.conferencias.slice(0,200);
   if(!persist()) return;
-  conf={gaveta:g.id,foto:null,imgAtual:null,celulas:null,marc:{},limiar:conf.limiar,obs:''};
+  conf=novaConf(g.id);
   show('hist');
 }
 
@@ -285,9 +418,10 @@ function renderHist(){
       ${c.faltando.length?`<p><b>Faltando:</b> ${c.faltando.map(esc).join(', ')}</p>`:''}
       ${c.obs?`<p class="muted">Obs.: ${esc(c.obs)}</p>`:''}
       ${c.foto?`<img class="prev" src="${c.foto}">`:''}
-      <div style="margin-top:8px"><button class="btn perigo" onclick="apagarConf('${c.id}')">Apagar</button></div>
+      <div style="margin-top:8px"><button class="btn perigo" data-ap="${c.id}">Apagar</button></div>
     </div>`;
   }).join('');
+  el.querySelectorAll('[data-ap]').forEach(b=>b.onclick=()=>apagarConf(b.dataset.ap));
 }
 function apagarConf(id){
   if(!confirm('Apagar esta conferência?')) return;
