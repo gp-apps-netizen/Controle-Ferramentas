@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#1d4ed8">
+<title>Controle de Ferramentas</title>
+<style>
+:root{--bg:#f3f5f9;--card:#fff;--txt:#1b2333;--mut:#667085;--pri:#1d4ed8;--bad:#dc2626;--warn:#d97706;--line:#e2e8f0}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1420;--card:#171e2e;--txt:#e6ebf5;--mut:#9aa6bd;--pri:#5b8cff;--bad:#f87171;--warn:#fbbf24;--line:#2a3550}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt);padding-bottom:72px}
+header{background:var(--pri);color:#fff;padding:14px 16px;font-weight:700;font-size:18px;position:sticky;top:0;z-index:5}
+main{padding:12px;max-width:640px;margin:0 auto}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);z-index:5}
+nav button{flex:1;padding:14px 4px;border:0;background:none;color:var(--mut);font-size:14px}
+nav button.on{color:var(--pri);font-weight:700}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+label.item{display:flex;align-items:center;gap:10px;margin:0;padding:10px 0;border-bottom:1px solid var(--line);color:var(--txt);font-size:16px}
+label.item:last-of-type{border-bottom:0}
+label.item input{width:22px;height:22px;flex:none}
+input[type=text],textarea,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--txt);font-size:16px}
+textarea{min-height:110px;font-family:inherit}
+button.btn{background:var(--pri);color:#fff;border:0;border-radius:8px;padding:11px 16px;font-size:15px;margin-top:10px;cursor:pointer}
+button.sec{background:var(--card);color:var(--pri);border:1px solid var(--pri)}
+button.perigo{background:var(--bad)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.muted{color:var(--mut);font-size:13px}
+.tag{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700}
+.tag.ok{background:#dcfce7;color:#166534}.tag.bad{background:#fee2e2;color:#991b1b}
+img.prev,canvas{max-width:100%;border-radius:8px;margin-top:8px;display:block}
+input[type=range]{width:100%}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>🧰 Controle de Ferramentas</header>
+<main>
+  <section id="v-gavetas"></section>
+  <section id="v-conf" class="hidden"></section>
+  <section id="v-hist" class="hidden"></section>
+</main>
+<nav>
+  <button data-v="gavetas" class="on">Gavetas</button>
+  <button data-v="conf">Conferir</button>
+  <button data-v="hist">Histórico</button>
+</nav>
+
+<script>
+const KEY='controle-ferramentas-v1';
+const GW=64,GH=48,COLS=4,ROWS=3;
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+
+let db;
+try{db=JSON.parse(localStorage.getItem(KEY))}catch(e){}
+db=db||{gavetas:[],conferencias:[]};
+
+function persist(){
+  try{localStorage.setItem(KEY,JSON.stringify(db));return true}
+  catch(e){alert('Sem espaço no armazenamento do navegador. Apague conferências antigas no Histórico.');return false}
+}
+
+/* ---------- imagens ---------- */
+const lerArquivo=f=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f)});
+const loadImg=src=>new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=src});
+function redimensionar(src,maxW,q){
+  return loadImg(src).then(img=>{
+    const s=Math.min(1,maxW/img.naturalWidth);
+    const c=document.createElement('canvas');
+    c.width=Math.round(img.naturalWidth*s);c.height=Math.round(img.naturalHeight*s);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    return c.toDataURL('image/jpeg',q);
+  });
+}
+
+/* ---------- comparação por grade ---------- */
+function gray(img){
+  const c=document.createElement('canvas');c.width=GW;c.height=GH;
+  const x=c.getContext('2d',{willReadFrequently:true});
+  x.drawImage(img,0,0,GW,GH);
+  const d=x.getImageData(0,0,GW,GH).data, out=new Float32Array(GW*GH);
+  for(let i=0;i<GW*GH;i++) out[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+  return out;
+}
+function zscore(a){
+  let m=0;for(const v of a)m+=v;m/=a.length;
+  let s=0;for(const v of a)s+=(v-m)*(v-m);s=Math.sqrt(s/a.length)||1;
+  return a.map(v=>(v-m)/s); // normaliza brilho/contraste
+}
+function comparar(A,B){
+  const a=zscore(gray(A)), b=zscore(gray(B));
+  const cw=GW/COLS, ch=GH/ROWS, out=[];
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    let s=0,n=0;
+    for(let y=r*ch;y<(r+1)*ch;y++)for(let x=c*cw;x<(c+1)*cw;x++){const i=y*GW+x;s+=Math.abs(a[i]-b[i]);n++}
+    out.push(s/n);
+  }
+  return out;
+}
+
+/* ---------- navegação ---------- */
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
+function show(v){
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  ['gavetas','conf','hist'].forEach(id=>$('#v-'+id).classList.toggle('hidden',id!==v));
+  ({gavetas:renderGavetas,conf:renderConf,hist:renderHist})[v]();
+  window.scrollTo(0,0);
+}
+
+/* ---------- aba Gavetas (cadastro do kit) ---------- */
+let editId=null, novaFoto=null;
+function renderGavetas(){
+  const el=$('#v-gavetas');
+  const g=editId?db.gavetas.find(x=>x.id===editId):null;
+  const lista=db.gavetas.map(x=>`
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><b>${esc(x.nome)}</b>
+          <div class="muted">${x.itens.length} itens · ${x.foto?'com foto do kit':'<span style="color:var(--warn)">sem foto do kit</span>'}</div>
+        </div>
+        <div class="row">
+          <button class="btn sec" onclick="editar('${x.id}')">Editar</button>
+          <button class="btn perigo" onclick="excluirG('${x.id}')">Excluir</button>
+        </div>
+      </div>
+    </div>`).join('')||'<p class="muted">Nenhuma gaveta cadastrada ainda.</p>';
+
+  el.innerHTML=`
+    <div class="card">
+      <b>${g?'Editar gaveta':'Nova gaveta'}</b>
+      <label>Nome da gaveta</label>
+      <input type="text" id="g-nome" value="${esc(g?.nome||'')}" placeholder="Ex.: Gaveta 3 - Alicates">
+      <label>Itens do kit (um por linha)</label>
+      <textarea id="g-itens" placeholder="Alicate ajustável&#10;Alicate bico&#10;Tesoura">${esc(g?g.itens.map(i=>i.nome).join('\n'):'')}</textarea>
+      <label>Foto do kit completo (gaveta arrumada, enquadramento fixo)</label>
+      <input type="file" accept="image/*" id="g-foto">
+      <div id="g-prev">${g?.foto?`<img class="prev" src="${g.foto}">`:''}</div>
+      <div class="row">
+        <button class="btn" onclick="salvarG()">Salvar gaveta</button>
+        ${g?'<button class="btn sec" onclick="cancelarEdicao()">Cancelar</button>':''}
+      </div>
+    </div>
+    ${lista}`;
+
+  $('#g-foto').onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    novaFoto=await redimensionar(await lerArquivo(f),1000,0.8);
+    $('#g-prev').innerHTML=`<img class="prev" src="${novaFoto}">`;
+  };
+}
+function editar(id){editId=id;novaFoto=null;renderGavetas();window.scrollTo(0,0)}
+function cancelarEdicao(){editId=null;novaFoto=null;renderGavetas()}
+function salvarG(){
+  const nome=$('#g-nome').value.trim();
+  const nomes=$('#g-itens').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!nome||!nomes.length) return alert('Informe o nome da gaveta e pelo menos um item.');
+  const g=editId?db.gavetas.find(x=>x.id===editId):null;
+  const itens=nomes.map(n=>{const antigo=g?.itens.find(i=>i.nome===n);return {id:antigo?.id||uid(),nome:n}});
+  const obj={id:g?.id||uid(),nome,itens,foto:novaFoto??g?.foto??null};
+  if(g) Object.assign(g,obj); else db.gavetas.push(obj);
+  if(!persist()) return;
+  editId=null;novaFoto=null;renderGavetas();
+}
+function excluirG(id){
+  if(!confirm('Excluir esta gaveta? O histórico dela será mantido.')) return;
+  db.gavetas=db.gavetas.filter(x=>x.id!==id);
+  persist();renderGavetas();
+}
+
+/* ---------- aba Conferir ---------- */
+let conf={gaveta:null,foto:null,imgAtual:null,celulas:null,marc:{},limiar:0.7,obs:''};
+
+function renderConf(){
+  const el=$('#v-conf');
+  if(!db.gavetas.length){el.innerHTML='<div class="card muted">Cadastre uma gaveta primeiro, na aba Gavetas.</div>';return}
+  if(!conf.gaveta||!db.gavetas.find(g=>g.id===conf.gaveta)) conf.gaveta=db.gavetas[0].id;
+  const g=db.gavetas.find(x=>x.id===conf.gaveta);
+
+  el.innerHTML=`
+    <div class="card">
+      <label>Gaveta</label>
+      <select id="c-sel">${db.gavetas.map(x=>`<option value="${x.id}" ${x.id===g.id?'selected':''}>${esc(x.nome)}</option>`).join('')}</select>
+      <label>1. Tire a foto da gaveta, no mesmo enquadramento do kit completo</label>
+      <input type="file" accept="image/*" capture="environment" id="c-foto">
+      <div id="c-res"></div>
+    </div>
+    <div class="card">
+      <b>2. Confira os itens (o que está na gaveta)</b>
+      <div style="margin-top:6px">
+        ${g.itens.map(i=>`<label class="item"><input type="checkbox" data-id="${i.id}" ${conf.marc[i.id]?'checked':''}><span>${esc(i.nome)}</span></label>`).join('')}
+      </div>
+      <label>Observações</label>
+      <textarea id="c-obs" style="min-height:60px">${esc(conf.obs)}</textarea>
+      <button class="btn" onclick="salvarConf()">Salvar conferência</button>
+    </div>`;
+
+  $('#c-sel').onchange=e=>{conf={gaveta:e.target.value,foto:null,imgAtual:null,celulas:null,marc:{},limiar:conf.limiar,obs:''};renderConf()};
+  $('#c-obs').oninput=e=>conf.obs=e.target.value;
+  el.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.onchange=()=>conf.marc[cb.dataset.id]=cb.checked);
+  $('#c-foto').onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    conf.foto=await redimensionar(await lerArquivo(f),1000,0.85);
+    conf.imgAtual=await loadImg(conf.foto);
+    conf.celulas=null;
+    paintRes();
+    await analisar();
+    paintRes();
+  };
+  paintRes();
+}
+
+async function analisar(){
+  const g=db.gavetas.find(x=>x.id===conf.gaveta);
+  if(!g.foto||!conf.foto) return;
+  const A=await loadImg(g.foto);
+  conf.celulas=comparar(A,conf.imgAtual);
+}
+
+function paintRes(){
+  const box=$('#c-res'); if(!box) return;
+  const g=db.gavetas.find(x=>x.id===conf.gaveta);
+  if(!conf.foto){box.innerHTML='';return}
+  if(!g.foto){
+    box.innerHTML=`<p class="muted">Esta gaveta não tem foto do kit. Confira só pela lista abaixo.</p><img class="prev" src="${conf.foto}">`;
+    return;
+  }
+  if(!conf.celulas){box.innerHTML='<p class="muted">Analisando…</p>';return}
+  box.innerHTML=`
+    <canvas id="c-cv"></canvas>
+    <p class="muted" id="c-txt"></p>
+    <label>Sensibilidade (menor = mais alertas): <b id="c-lv"></b></label>
+    <input type="range" id="c-lim" min="0.3" max="1.5" step="0.05" value="${conf.limiar}">`;
+  $('#c-lim').oninput=e=>{conf.limiar=+e.target.value;desenhar()};
+  desenhar();
+}
+
+function desenhar(){
+  const cv=$('#c-cv'), img=conf.imgAtual;
+  if(!cv||!img||!conf.celulas) return;
+  cv.width=img.naturalWidth;cv.height=img.naturalHeight;
+  const x=cv.getContext('2d');
+  x.drawImage(img,0,0);
+  const cw=cv.width/COLS, ch=cv.height/ROWS;
+  let n=0;
+  conf.celulas.forEach((v,i)=>{
+    if(v<=conf.limiar) return;
+    n++;
+    const r=Math.floor(i/COLS), c=i%COLS;
+    x.fillStyle='rgba(220,38,38,0.35)';x.fillRect(c*cw,r*ch,cw,ch);
+    x.strokeStyle='#dc2626';x.lineWidth=Math.max(3,cv.width/200);x.strokeRect(c*cw,r*ch,cw,ch);
+  });
+  $('#c-txt').innerHTML=`Áreas diferentes do kit: <b>${n}</b> de ${COLS*ROWS}. Use como pista para achar o que falta. A decisão final é sua, pela lista.`;
+  $('#c-lv').textContent=conf.limiar.toFixed(2);
+}
+
+async function miniatura(src){return redimensionar(src,320,0.6)}
+
+async function salvarConf(){
+  const g=db.gavetas.find(x=>x.id===conf.gaveta); if(!g) return;
+  const faltando=g.itens.filter(i=>!conf.marc[i.id]).map(i=>i.nome);
+  if(faltando.length===g.itens.length && !confirm('Nenhum item marcado como presente. Salvar mesmo assim?')) return;
+  const foto=conf.foto?await miniatura(conf.foto):null;
+  db.conferencias.unshift({id:uid(),data:new Date().toISOString(),gaveta:g.nome,total:g.itens.length,faltando,obs:conf.obs||'',foto});
+  db.conferencias=db.conferencias.slice(0,200);
+  if(!persist()) return;
+  conf={gaveta:g.id,foto:null,imgAtual:null,celulas:null,marc:{},limiar:conf.limiar,obs:''};
+  show('hist');
+}
+
+/* ---------- aba Histórico ---------- */
+function renderHist(){
+  const el=$('#v-hist');
+  if(!db.conferencias.length){el.innerHTML='<div class="card muted">Nenhuma conferência salva ainda.</div>';return}
+  el.innerHTML=db.conferencias.map(c=>{
+    const ok=!c.faltando.length;
+    return `<div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <b>${esc(c.gaveta)}</b>
+        <span class="tag ${ok?'ok':'bad'}">${ok?'Completa':'Faltando '+c.faltando.length}</span>
+      </div>
+      <div class="muted">${new Date(c.data).toLocaleString('pt-BR')} · ${c.total-c.faltando.length}/${c.total} itens presentes</div>
+      ${c.faltando.length?`<p><b>Faltando:</b> ${c.faltando.map(esc).join(', ')}</p>`:''}
+      ${c.obs?`<p class="muted">Obs.: ${esc(c.obs)}</p>`:''}
+      ${c.foto?`<img class="prev" src="${c.foto}">`:''}
+      <div style="margin-top:8px"><button class="btn perigo" onclick="apagarConf('${c.id}')">Apagar</button></div>
+    </div>`;
+  }).join('');
+}
+function apagarConf(id){
+  if(!confirm('Apagar esta conferência?')) return;
+  db.conferencias=db.conferencias.filter(c=>c.id!==id);
+  persist();renderHist();
+}
+
+/* ---------- PWA (manifest e ícone gerados aqui) ---------- */
+(function pwa(){
+  const c=document.createElement('canvas');c.width=c.height=192;
+  const x=c.getContext('2d');
+  x.fillStyle='#1d4ed8';x.fillRect(0,0,192,192);
+  x.font='110px serif';x.textAlign='center';x.textBaseline='middle';x.fillText('🧰',96,100);
+  const m={name:'Controle de Ferramentas',short_name:'Ferramentas',start_url:location.pathname,display:'standalone',
+    background_color:'#f3f5f9',theme_color:'#1d4ed8',
+    icons:[{src:c.toDataURL('image/png'),sizes:'192x192',type:'image/png'}]};
+  const l=document.createElement('link');l.rel='manifest';
+  l.href='data:application/manifest+json,'+encodeURIComponent(JSON.stringify(m));
+  document.head.appendChild(l);
+})();
+
+show('gavetas');
+</script>
+</body>
+</html>
